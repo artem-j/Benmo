@@ -5,6 +5,8 @@ from _thread import *
 
 global myID
 global nodeAddrMatrix
+listeners = []
+linkSevered = [False, False, False]
 
 global balance
 global transactions
@@ -93,7 +95,7 @@ def updateChain(update):
 # Leader functions
 
 def prepare(connection, acks, crashedNodes):
-    #print("Entering prepare")
+    print("Entering prepare")
     global ballotNum
     global depth
 
@@ -102,13 +104,13 @@ def prepare(connection, acks, crashedNodes):
 
     try:
         connection.sendall(message)
-    except ConnectionError:
+    except (ConnectionError, socket.timeout) as e:
         crashedNodes.append(connection)
         return
 
     try:
         data = connection.recv(1024)
-    except ConnectionError:
+    except (ConnectionError, socket.timeout) as e:
         crashedNodes.append(connection)
         return
     if not data:
@@ -117,7 +119,7 @@ def prepare(connection, acks, crashedNodes):
 
     ack = pickle.loads(data)
     acks.append(ack)
-    #print("Prepare returned successfully")
+    print("Prepare returned successfully")
 
 def getPriorityBlock(acks):
     #print("Entering getPriorityBlock")
@@ -143,7 +145,7 @@ def getPriorityBlock(acks):
     return transactions if priorityBlock[0] is None else priorityBlock[0]
 
 
-def propose(connection, proposal, ballot, accepts, needsUpdate, crashedNodes):
+def propose(id, connection, proposal, ballot, accepts, needsUpdate, crashedNodes):
     #print("Entering propose")
     global depth
 
@@ -152,12 +154,12 @@ def propose(connection, proposal, ballot, accepts, needsUpdate, crashedNodes):
 
     try:
         connection.sendall(message)
-    except ConnectionError:
+    except (ConnectionError, socket.timeout) as e:
         return
 
     try:
         data = connection.recv(1024)
-    except ConnectionError:
+    except (ConnectionError, socket.timeout) as e:
         crashedNodes.append(connection)
         return
     if not data:
@@ -172,7 +174,7 @@ def propose(connection, proposal, ballot, accepts, needsUpdate, crashedNodes):
 
     recvDepth = accepted[3]
     if recvDepth < depth:
-        needsUpdate.append((connection, recvDepth))
+        needsUpdate.append((id, connection, recvDepth))
 
     blockchainLock.release()
     freeLocks.append(blockchainLock)
@@ -186,7 +188,7 @@ def sendDecision(connection, decidedNum, decidedDepth, decidedBlock, crashedNode
 
     try:
         connection.sendall(message)
-    except ConnectionError:
+    except (ConnectionError, socket.timeout) as e:
         crashedNodes.append(connection)
         return
     #print("sendDecision returned successfully")
@@ -200,7 +202,7 @@ def sendUpdate(connection, recvDepth, savedChain):
     message = pickle.dumps(update)
     try:
         connection.sendall(message)
-    except ConnectionError:
+    except (ConnectionError, socket.timeout) as e:
         return
     #print("sendUpdate returned successfully")
 
@@ -212,25 +214,30 @@ def leader():
     global ballotNum
     global depth
 
-    time.sleep(10)
+    time.sleep(5)
 
     ballotNum = (ballotNum[0] + 1, myID)
     saveState()
 
     connections = []
     crashedNodes = []
-    for row in nodeAddrMatrix:
+    for id, row in enumerate(nodeAddrMatrix):
+        if linkSevered[id]:
+            continue
         connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connection.settimeout(3)
         try:
             connection.connect(row[myID])
-        except ConnectionError:
+        except (ConnectionError, socket.timeout) as e:
             print("Failed to connect")
             continue
         connections.append(connection)
 
     acks = []
     threads = []
-    for c in connections:
+    for id, c in enumerate(connections):
+        if linkSevered[id]:
+            continue
         thread = threading.Thread(name="prepare", target=prepare,
                                   args=(c, acks, crashedNodes,))
         threads.append(thread)
@@ -246,11 +253,11 @@ def leader():
     accepts = []
     needsUpdate = []
     threads = []
-    for c in connections:
-        if c in crashedNodes:
+    for id, c in enumerate(connections):
+        if linkSevered[id] or c in crashedNodes:
             continue
         thread = threading.Thread(name="propose", target=propose,
-                                  args=(c, proposal, ballotNum, accepts, needsUpdate, crashedNodes))
+                                  args=(id, c, proposal, ballotNum, accepts, needsUpdate, crashedNodes))
         threads.append(thread)
         thread.start()
     for t in threads:
@@ -262,8 +269,8 @@ def leader():
     savedChain = list(blockchain)
     savedDepth = depth
     threads = []
-    for c in connections:
-        if c in crashedNodes:
+    for id, c in enumerate(connections):
+        if linkSevered[id] or c in crashedNodes:
             continue
         thread = threading.Thread(name="sendDecision", target=sendDecision,
                                   args=(c, ballotNum, savedDepth, proposal, crashedNodes))
@@ -273,8 +280,8 @@ def leader():
         t.join()
 
     threads = []
-    for (c, d) in needsUpdate:
-        if c in crashedNodes:
+    for id, c, d in needsUpdate:
+        if linkSevered[id] or c in crashedNodes:
             continue
         thread = threading.Thread(name="sendUpdate", target=sendUpdate,
                                   args=(c, d, savedChain,))
@@ -299,7 +306,7 @@ def leader():
 
 # Acceptor functions
 def sendAck(connection, leaderNum, leaderDepth):
-    #print("Entering sendAck")
+    print("Entering sendAck")
     global ballotNum
     global depth
     global acceptNum
@@ -312,6 +319,8 @@ def sendAck(connection, leaderNum, leaderDepth):
         ballotNum = leaderNum
         saveState()
     else:
+        ballotLock.release()
+        freeLocks.append(ballotLock)
         return False
 
     ballotLock.release()
@@ -326,10 +335,10 @@ def sendAck(connection, leaderNum, leaderDepth):
     message = pickle.dumps(ack)
     try:
         connection.sendall(message)
-    except ConnectionError:
+    except (ConnectionError, socket.timeout) as e:
         return False
 
-    #print("sendAck returned successfully")
+    print("sendAck returned successfully")
     return True
 
 
@@ -346,6 +355,9 @@ def sendAccept(connection, acceptBal, proposal):
         acceptBlock = proposal
         acceptNum = acceptBal
     else:
+        acceptLock.release()
+        ballotLock.release()
+        freeLocks.append(ballotLock)
         return False
 
     acceptLock.release()
@@ -356,7 +368,7 @@ def sendAccept(connection, acceptBal, proposal):
     message = pickle.dumps(accept)
     try:
         connection.sendall(message)
-    except ConnectionError:
+    except (ConnectionError, socket.timeout) as e:
         return False
 
     #print("sendAccept returned successfully")
@@ -374,10 +386,14 @@ def decide(connection, decisionDepth, decision):
     if decisionDepth > depth:
         try:
             data = connection.recv(1024)
-        except ConnectionError:
+        except (ConnectionError, socket.timeout) as e:
+            blockchainLock.release()
+            freeLocks.append(blockchainLock)
             return False
 
         if not data:
+            blockchainLock.release()
+            freeLocks.append(blockchainLock)
             return False
         updateChain(pickle.loads(data))
 
@@ -394,44 +410,62 @@ def decide(connection, decisionDepth, decision):
     #print("applyDecision returned successfully")
     return True
 
-def acceptor(connection):
-    print("Entering acceptor")
+def acceptor(listener, id):
+    print("Entering acceptor for " + str(id))
+    global linkSevered
     global acceptBlock
     global acceptNum
 
+    connection, address = listener.accept()
+
+    if linkSevered[id]:
+        return
     try:
         data = connection.recv(1024)
-    except ConnectionError:
+    except (ConnectionError, socket.timeout) as e:
+        start_new_thread(acceptor, (listener, id))
         return
     if not data:
+        start_new_thread(acceptor, (listener, id))
         return
 
     header, leaderNum, leaderDepth = pickle.loads(data)
     if sendAck(connection, leaderNum, leaderDepth) == False:
+        start_new_thread(acceptor, (listener, id))
         return
 
+
+    if linkSevered[id]:
+        return
     try:
         data = connection.recv(1024)
-    except ConnectionError:
+    except (ConnectionError, socket.timeout) as e:
+        start_new_thread(acceptor, (listener, id))
         return
     if not data:
+        start_new_thread(acceptor, (listener, id))
         return
 
     header, acceptBal, acceptDepth, proposal = pickle.loads(data)
     if sendAccept(connection, acceptBal, proposal) == False:
+        start_new_thread(acceptor, (listener, id))
         return
 
-    # Receive the decision
+    if linkSevered[id]:
+        return
     try:
         data = connection.recv(1024)
-    except ConnectionError:
+    except (ConnectionError, socket.timeout) as e:
+        start_new_thread(acceptor, (listener, id))
         return
     if not data:
+        start_new_thread(acceptor, (listener, id))
         return
 
     header, decicedBallot, decisionDepth, decision = pickle.loads(data)
     madeDecision = decide(connection, decisionDepth, decision)
     if not madeDecision:
+        start_new_thread(acceptor, (listener, id))
         return
 
     print(blockchain)
@@ -440,6 +474,8 @@ def acceptor(connection):
     acceptBlock = None
     acceptNum = (0, 0)
     acceptLock.release()
+
+    start_new_thread(acceptor, (listener, id))
     print("acceptor returned successfully")
 
 
@@ -458,21 +494,21 @@ def parseAddrs(config):
 
     return matrix
 
-def accept(listener):
-    while True:
-        connection, address = listener.accept()
-        start_new_thread(acceptor, (connection,))
-
 def openListeners():
     global myID
     global nodeAddrMatrix
+    global listeners
 
-    for (myIP, myPort) in nodeAddrMatrix[myID]:
+    listeners = []
+    for (id, (myIP, myPort)) in enumerate(nodeAddrMatrix[myID]):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listeners.append(listener)
         listener.bind((myIP, myPort))
         listener.listen(1)
 
-        start_new_thread(accept, (listener,))
+        start_new_thread(acceptor, (listener, id,))
+
 
 def processTransaction(amount, debitNode, creditNode):
     global balance
@@ -495,6 +531,7 @@ def processTransaction(amount, debitNode, creditNode):
 def Main():
     global myID
     global nodeAddrMatrix
+    global listeners
     global ballotNum
 
     global balance
@@ -515,7 +552,9 @@ def Main():
               "printBlockchain\n"
               "printBalance\n"
               "printQueue\n"
-              "crashNode\n")
+              "crashNode\n"
+              "severLink\n"
+              "restoreLink\n")
 
         command = input("Enter selection: ")
         if command == "moneyTransfer":
@@ -545,6 +584,35 @@ def Main():
             print(transactions)
         elif command == "crashNode":
             sys.exit()
+        elif command == "severLink":
+            targetNode = int(input("Please enter node to sever link with: "))
+            if linkSevered[targetNode]:
+                print("Error: Link with node " + str(targetNode) + " already severed.")
+            else:
+                linkSevered[targetNode] = True
+        elif command == "restoreLink":
+            targetNode = int(input("Please enter node to restore link with: "))
+            if not linkSevered[targetNode]:
+                print("Error: Link with node " + str(targetNode) + " has not been severed.")
+            else:
+                linkSevered[targetNode] = False
+                print(listeners)
+                start_new_thread(acceptor, (listeners[targetNode], targetNode))
+                '''listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                while True:
+                    try:
+                        print("Attempting to bind to " + str(nodeAddrMatrix[myID][targetNode]))
+                        listener.bind(nodeAddrMatrix[myID][targetNode])
+                        print("Successfully connected")
+                        break
+                    except OSError:
+                        print("Stuck")
+                        time.sleep(2)
+                        continue
+                print("About to start accept thread with " + str(listener))
+                '''
+
         else:
             print("Error: Invalid command\n")
             continue
