@@ -1,66 +1,78 @@
-import sys, os, socket, threading, time
+import sys, os, socket, threading, time, random
 import pickle
 import json
 from _thread import *
 
-global myID
-global nodeAddrMatrix
-listeners = []
-linkSevered = [False, False, False]
 
+
+# Network state
+global quorum_size
+global node_addr_matrix
+link_severed = [False, False, False]
+
+# Process state
+global my_id
 global balance
 global transactions
 global blockchain
 global depth
 
-global ballotNum
-acceptNum = (0, 0)
-acceptBlock = None
+# Paxos state
+in_paxos = False
+global ballot_num
+accept_num = (0, 0)
+accept_block = None
 
-transactionLock = threading.Lock()
-blockchainLock = threading.Lock()
-ballotLock = threading.Lock()
-acceptLock = threading.Lock()
-freeLocks = [transactionLock, blockchainLock, ballotLock]
+# Locks
+transaction_lock = threading.Lock()
+blockchain_lock = threading.Lock()
+ballot_lock = threading.Lock()
+accept_lock = threading.Lock()
+free_locks = [transaction_lock, blockchain_lock, ballot_lock]
 
-def saveState():
+
+'''
+Global utility functions for saving/loading state, ballot comparisons, and state updates
+'''
+
+def save_state():
     global balance
     global transactions
     global blockchain
     global depth
-    global ballotNum
+    global ballot_num
 
-    state = open("state" + str(myID) + ".txt", "w")
+    state = open("state" + str(my_id) + ".txt", "w")
 
-    for lock in freeLocks:
+    for lock in free_locks:
         lock.acquire()
 
-    balanceStr = "balance:" + str(balance) + "\n"
-    transactionStr = "transactions:" + json.dumps(transactions) + "\n"
-    blockchainStr = "blockchain:" + json.dumps(blockchain) + "\n"
-    depthStr = "depth:" + str(depth) + "\n"
-    ballotNumStr = "ballotNum:" + json.dumps(ballotNum) + "\n"
+    balance_str = "balance:" + str(balance) + "\n"
+    transaction_str = "transactions:" + json.dumps(transactions) + "\n"
+    blockchain_str = "blockchain:" + json.dumps(blockchain) + "\n"
+    depth_str = "depth:" + str(depth) + "\n"
+    ballot_num_str = "ballotNum:" + json.dumps(ballot_num) + "\n"
 
-    state.write(balanceStr)
-    state.write(transactionStr)
-    state.write(blockchainStr)
-    state.write(depthStr)
-    state.write(ballotNumStr)
+    state.write(balance_str)
+    state.write(transaction_str)
+    state.write(blockchain_str)
+    state.write(depth_str)
+    state.write(ballot_num_str)
 
-    for lock in freeLocks:
+    for lock in free_locks:
         lock.release()
 
 
-def loadState():
+def load_state():
     global balance
     global transactions
     global blockchain
     global depth
-    global ballotNum
+    global ballot_num
 
-    state = open("state" + str(myID) + ".txt", "r")
+    state = open("state" + str(my_id) + ".txt", "r")
 
-    for lock in freeLocks:
+    for lock in free_locks:
         lock.acquire()
 
     lines = state.readlines()
@@ -68,91 +80,102 @@ def loadState():
     transactions = json.loads(lines[1].split(":")[1])
     blockchain = json.loads(lines[2].split(":")[1])
     depth = int(lines[3].split(":")[1])
-    ballotNum  = json.loads(lines[4].split(":")[1])
+    ballot_num = json.loads(lines[4].split(":")[1])
 
-    for lock in freeLocks:
+    for lock in free_locks:
         lock.release()
 
 
-def isGreater(ballot1, ballot2):
+def is_greater(ballot1, ballot2):
     if ballot1[0] > ballot2[0] or (ballot1[0] == ballot2[0] and ballot1[1] > ballot2[1]):
         return True
     else:
         return False
 
+def update_balance(block):
+    global my_id
+    global balance
 
-def updateChain(update):
-    #print("Entering updateChain")
+    for amount, debit_node, credit_node in block:
+        if debit_node == my_id:
+            balance -= amount
+        if credit_node == my_id:
+            balance += amount
+
+def update_chain(update):
     global depth
     global blockchain
 
     for block in update:
+        update_balance(block)
         blockchain.append(block)
         depth += 1
-        saveState()
-    #print("updateChain returned successfully")
+        save_state()
 
-# Leader functions
 
-def prepare(connection, acks, crashedNodes):
-    print("Entering prepare")
-    global ballotNum
+
+
+''' 
+Leader functions for communicating with processes, getting the highest priority acceptVal,
+determining if quorum has been reached, and executing Paxos as leader.
+'''
+
+def prepare(connection, acks, crashed_nodes):
+    global ballot_num
     global depth
 
-    prepare = ("prepare", ballotNum, depth)
+    prepare = ("prepare", ballot_num, depth)
     message = pickle.dumps(prepare)
 
     try:
+        time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
-        crashedNodes.append(connection)
+        crashed_nodes.append(connection)
         return
 
     try:
         data = connection.recv(1024)
     except (ConnectionError, socket.timeout) as e:
-        crashedNodes.append(connection)
+        crashed_nodes.append(connection)
         return
     if not data:
-        crashedNodes.append(connection)
+        crashed_nodes.append(connection)
         return
 
     ack = pickle.loads(data)
     acks.append(ack)
-    print("Prepare returned successfully")
 
-def getPriorityBlock(acks):
-    #print("Entering getPriorityBlock")
-    global ballotNum
+def get_priority_block(acks):
+    global ballot_num
     global depth
 
-    priorityBlock = (None, (0, 0))
+    priority_block = (None, (0, 0))
     for ack in acks:
-        header, ackBallot, prevAcceptNum, prevAcceptBlock, ackDepth, update = ack
+        header, ack_ballot, prev_accept_num, prev_accept_block, ack_depth, update = ack
 
-        blockchainLock.acquire()
-        freeLocks.remove(blockchainLock)
-        if ackDepth > depth and update != None:
-            updateChain(update)
-        blockchainLock.release()
-        freeLocks.append(blockchainLock)
+        blockchain_lock.acquire()
+        free_locks.remove(blockchain_lock)
+        if ack_depth > depth and update != None:
+            update_chain(update)
+        blockchain_lock.release()
+        free_locks.append(blockchain_lock)
 
-        if prevAcceptBlock is not None:
-            if isGreater(prevAcceptNum, priorityBlock[1]):
-                priorityBlock = (prevAcceptBlock, prevAcceptNum)
+        if prev_accept_block is not None:
+            if is_greater(prev_accept_num, priority_block[1]):
+                priority_block = (prev_accept_block, prev_accept_num)
 
-    #print("getPriorityBlock returned successfully")
-    return transactions if priorityBlock[0] is None else priorityBlock[0]
+    return transactions if priority_block[0] is None else priority_block[0]
 
 
-def propose(id, connection, proposal, ballot, accepts, needsUpdate, crashedNodes):
-    #print("Entering propose")
+def propose(id, connection, proposal, ballot, accepts, needs_update, crashed_nodes):
     global depth
 
-    accept = ("accept", ballot, depth, proposal)  # Continue with proposal if chain updated to match depth?
+    accept = ("accept", ballot, depth, proposal)
     message = pickle.dumps(accept)
 
     try:
+        time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
         return
@@ -160,347 +183,355 @@ def propose(id, connection, proposal, ballot, accepts, needsUpdate, crashedNodes
     try:
         data = connection.recv(1024)
     except (ConnectionError, socket.timeout) as e:
-        crashedNodes.append(connection)
+        crashed_nodes.append(connection)
         return
     if not data:
-        crashedNodes.append(connection)
+        crashed_nodes.append(connection)
         return
 
     accepted = pickle.loads(data)
     accepts.append(accepted)
 
-    blockchainLock.acquire()
-    freeLocks.remove(blockchainLock)
+    blockchain_lock.acquire()
+    free_locks.remove(blockchain_lock)
 
-    recvDepth = accepted[3]
-    if recvDepth < depth:
-        needsUpdate.append((id, connection, recvDepth))
+    recv_depth = accepted[3]
+    if recv_depth < depth:
+        needs_update.append((id, connection, recv_depth))
 
-    blockchainLock.release()
-    freeLocks.append(blockchainLock)
-    #print("Propose returned successfully")
+    blockchain_lock.release()
+    free_locks.append(blockchain_lock)
 
-def sendDecision(connection, decidedNum, decidedDepth, decidedBlock, crashedNodes):
-    #print("Entering sendDecision")
+def send_decision(connection, decided_num, decided_depth, decided_block, crashed_nodes):
 
-    decision = ("decision", decidedNum, decidedDepth, decidedBlock)
+    decision = ("decision", decided_num, decided_depth, decided_block)
     message = pickle.dumps(decision)
 
     try:
+        time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
-        crashedNodes.append(connection)
+        crashed_nodes.append(connection)
         return
-    #print("sendDecision returned successfully")
 
-
-def sendUpdate(connection, recvDepth, savedChain):
-    #print("Entering sendUpdate")
+def send_update(connection, recv_depth, saved_chain):
     global depth
 
-    update = savedChain[recvDepth:depth]
+    update = saved_chain[recv_depth:depth]
     message = pickle.dumps(update)
     try:
+        time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
         return
-    #print("sendUpdate returned successfully")
+
+def quorum(responses):
+    global quorum_size
+
+    if len(responses) >= quorum_size:
+        return True
+    else:
+        return False
 
 def leader():
-    print("Entering leader")
-    global myID
-    global nodeAddrMatrix
+    global my_id
+    global node_addr_matrix
+
     global transactions
-    global ballotNum
     global depth
 
-    time.sleep(5)
+    global in_paxos
+    global ballot_num
 
-    ballotNum = (ballotNum[0] + 1, myID)
-    saveState()
+    timer = random.randint(20, 60)
+    time.sleep(timer)
+    in_paxos = True
+
+    ballot_num = [ballot_num[0] + 1, my_id]
+    save_state()
 
     connections = []
-    crashedNodes = []
-    for id, row in enumerate(nodeAddrMatrix):
-        if linkSevered[id]:
+    crashed_nodes = []
+    for id, row in enumerate(node_addr_matrix):
+        if link_severed[id]:
             continue
         connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        connection.settimeout(3)
         try:
-            connection.connect(row[myID])
+            connection.connect(row[my_id])
         except (ConnectionError, socket.timeout) as e:
-            print("Failed to connect")
             continue
         connections.append(connection)
 
     acks = []
     threads = []
     for id, c in enumerate(connections):
-        if linkSevered[id]:
+        if link_severed[id]:
             continue
-        thread = threading.Thread(name="prepare", target=prepare,
-                                  args=(c, acks, crashedNodes,))
+        thread = threading.Thread(name="prepare", target=prepare, args=(c, acks, crashed_nodes,))
         threads.append(thread)
         thread.start()
     for t in threads:
+        if quorum(acks):
+            break
         t.join()
-    if (len(acks) < 2):  # change 3 to quorum size later
+
+    if not quorum(acks):
         start_new_thread(leader, ())
         return
 
-    proposal = getPriorityBlock(acks)
+
+    proposal = get_priority_block(acks)
+
 
     accepts = []
-    needsUpdate = []
+    needs_update = []
     threads = []
     for id, c in enumerate(connections):
-        if linkSevered[id] or c in crashedNodes:
+        if link_severed[id] or c in crashed_nodes:
             continue
-        thread = threading.Thread(name="propose", target=propose,
-                                  args=(id, c, proposal, ballotNum, accepts, needsUpdate, crashedNodes))
+        thread = threading.Thread(name="propose", target=propose, args=(id, c, proposal, ballot_num, accepts, needs_update, crashed_nodes))
         threads.append(thread)
         thread.start()
     for t in threads:
+        if quorum(accepts):
+            break
         t.join()
-    if len(accepts) < 2:  # change 3 to quorum size later
+
+    if not quorum(accepts):
         start_new_thread(leader, ())
         return
 
-    savedChain = list(blockchain)
-    savedDepth = depth
+    saved_chain = list(blockchain)
+    saved_depth = depth
+
     threads = []
     for id, c in enumerate(connections):
-        if linkSevered[id] or c in crashedNodes:
+        if link_severed[id] or c in crashed_nodes:
             continue
-        thread = threading.Thread(name="sendDecision", target=sendDecision,
-                                  args=(c, ballotNum, savedDepth, proposal, crashedNodes))
+        thread = threading.Thread(name="sendDecision", target=send_decision, args=(c, ballot_num, saved_depth, proposal, crashed_nodes))
         threads.append(thread)
         thread.start()
     for t in threads:
         t.join()
 
     threads = []
-    for id, c, d in needsUpdate:
-        if linkSevered[id] or c in crashedNodes:
+    for id, c, d in needs_update:
+        if link_severed[id] or c in crashed_nodes:
             continue
-        thread = threading.Thread(name="sendUpdate", target=sendUpdate,
-                                  args=(c, d, savedChain,))
+        thread = threading.Thread(name="sendUpdate", target=send_update, args=(c, d, saved_chain,))
         threads.append(thread)
         thread.start()
     for t in threads:
         t.join()
 
-    transactionLock.acquire()
-    freeLocks.remove(transactionLock)
+
+    transaction_lock.acquire()
+    free_locks.remove(transaction_lock)
 
     if proposal == transactions:
         transactions = []
-        saveState()
+        save_state()
     elif transactions != []:
         start_new_thread(leader, ())
 
-    transactionLock.release()
-    freeLocks.append(transactionLock)
-    print("leader returned successfully")
+    transaction_lock.release()
+    free_locks.append(transaction_lock)
+    in_paxos = False
 
 
-# Acceptor functions
-def sendAck(connection, leaderNum, leaderDepth):
-    print("Entering sendAck")
-    global ballotNum
+
+''' 
+Acceptor functions for communicating with leader, applying the decision to the blockchain, 
+receiving data from leader, and acting as an acceptor in an instance of Paxos.
+'''
+
+def send_ack(connection, leader_num, leader_depth):
+    global ballot_num
     global depth
-    global acceptNum
-    global acceptBlock
+    global accept_num
+    global accept_block
 
-    ballotLock.acquire()
-    freeLocks.remove(ballotLock)
+    ballot_lock.acquire()
+    free_locks.remove(ballot_lock)
 
-    if isGreater(leaderNum, ballotNum) or leaderNum == ballotNum:
-        ballotNum = leaderNum
-        saveState()
+    if is_greater(leader_num, ballot_num) or leader_num == ballot_num:
+        ballot_num = leader_num
+        save_state()
     else:
-        ballotLock.release()
-        freeLocks.append(ballotLock)
+        ballot_lock.release()
+        free_locks.append(ballot_lock)
         return False
 
-    ballotLock.release()
-    freeLocks.append(ballotLock)
+    ballot_lock.release()
+    free_locks.append(ballot_lock)
 
-    if leaderDepth < depth:
-        update = blockchain[leaderDepth:depth]
+    if leader_depth < depth:
+        update = blockchain[leader_depth:depth]
     else:
         update = None
 
-    ack = ("ack", leaderNum, acceptNum, acceptBlock, depth, update)
+    ack = ("ack", leader_num, accept_num, accept_block, depth, update)
     message = pickle.dumps(ack)
     try:
+        time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
         return False
 
-    print("sendAck returned successfully")
     return True
 
 
-def sendAccept(connection, acceptBal, proposal):
-    #print("Entering sendAccept")
-    global acceptNum
-    global acceptBlock
+def send_accept(connection, accept_bal, proposal):
+    global accept_num
+    global accept_block
 
-    ballotLock.acquire()
-    acceptLock.acquire()
-    freeLocks.remove(ballotLock)
+    ballot_lock.acquire()
+    accept_lock.acquire()
+    free_locks.remove(ballot_lock)
 
-    if isGreater(acceptBal, acceptNum) or acceptBal == acceptNum:
-        acceptBlock = proposal
-        acceptNum = acceptBal
+    if is_greater(accept_bal, accept_num) or accept_bal == accept_num:
+        accept_block = proposal
+        accept_num = accept_bal
     else:
-        acceptLock.release()
-        ballotLock.release()
-        freeLocks.append(ballotLock)
+        accept_lock.release()
+        ballot_lock.release()
+        free_locks.append(ballot_lock)
         return False
 
-    acceptLock.release()
-    ballotLock.release()
-    freeLocks.append(ballotLock)
+    accept_lock.release()
+    ballot_lock.release()
+    free_locks.append(ballot_lock)
 
-    accept = ("accept", acceptBal, proposal, depth)
+    accept = ("accept", accept_bal, proposal, depth)
     message = pickle.dumps(accept)
     try:
+        time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
         return False
 
-    #print("sendAccept returned successfully")
     return True
 
-def decide(connection, decisionDepth, decision):
-    #print("Entering applyDecision")
+def decide(connection, decision_depth, decision):
     global depth
     global transactions
     global blockchain
 
-    blockchainLock.acquire()
-    freeLocks.remove(blockchainLock)
+    blockchain_lock.acquire()
+    free_locks.remove(blockchain_lock)
 
-    if decisionDepth > depth:
+    if decision_depth > depth:
         try:
             data = connection.recv(1024)
         except (ConnectionError, socket.timeout) as e:
-            blockchainLock.release()
-            freeLocks.append(blockchainLock)
+            blockchain_lock.release()
+            free_locks.append(blockchain_lock)
             return False
 
         if not data:
-            blockchainLock.release()
-            freeLocks.append(blockchainLock)
+            blockchain_lock.release()
+            free_locks.append(blockchain_lock)
             return False
-        updateChain(pickle.loads(data))
+        update_chain(pickle.loads(data))
 
+    update_balance(decision)
     blockchain.append(decision)
     depth += 1
-    if decision == transactions:  # REMEMBER TO FIX THIS
+    if decision == transactions:
         transactions = []
+    save_state()
 
-    saveState()
+    blockchain_lock.release()
+    free_locks.append(blockchain_lock)
 
-    blockchainLock.release()
-    freeLocks.append(blockchainLock)
-
-    #print("applyDecision returned successfully")
     return True
 
+def get_data(connection, listener, id):
+    if link_severed[id]:
+        return None
+    try:
+        data = connection.recv(1024)
+    except (ConnectionError, socket.timeout) as e:
+        start_new_thread(acceptor, (listener, id))
+        return None
+    if not data:
+        start_new_thread(acceptor, (listener, id))
+        return None
+
+    return data
+
 def acceptor(listener, id):
-    print("Entering acceptor for " + str(id))
-    global linkSevered
-    global acceptBlock
-    global acceptNum
+    global link_severed
+    global accept_block
+    global accept_num
 
     connection, address = listener.accept()
 
-    if linkSevered[id]:
-        return
-    try:
-        data = connection.recv(1024)
-    except (ConnectionError, socket.timeout) as e:
-        start_new_thread(acceptor, (listener, id))
-        return
-    if not data:
-        start_new_thread(acceptor, (listener, id))
+    data = get_data(connection, listener, id)
+    if data == None:
         return
 
-    header, leaderNum, leaderDepth = pickle.loads(data)
-    if sendAck(connection, leaderNum, leaderDepth) == False:
+    header, leader_num, leader_depth = pickle.loads(data)
+    if send_ack(connection, leader_num, leader_depth) == False:
         start_new_thread(acceptor, (listener, id))
         return
 
 
-    if linkSevered[id]:
+    data = get_data(connection, listener, id)
+    if data == None:
         return
-    try:
-        data = connection.recv(1024)
-    except (ConnectionError, socket.timeout) as e:
-        start_new_thread(acceptor, (listener, id))
-        return
-    if not data:
+
+    header, accept_bal, accept_depth, proposal = pickle.loads(data)
+    if send_accept(connection, accept_bal, proposal) == False:
         start_new_thread(acceptor, (listener, id))
         return
 
-    header, acceptBal, acceptDepth, proposal = pickle.loads(data)
-    if sendAccept(connection, acceptBal, proposal) == False:
+    data = get_data(connection, listener, id)
+    if data == None:
+        return
+
+    header, deciced_ballot, decision_depth, decision = pickle.loads(data)
+    made_decision = decide(connection, decision_depth, decision)
+    if not made_decision:
         start_new_thread(acceptor, (listener, id))
         return
 
-    if linkSevered[id]:
-        return
-    try:
-        data = connection.recv(1024)
-    except (ConnectionError, socket.timeout) as e:
-        start_new_thread(acceptor, (listener, id))
-        return
-    if not data:
-        start_new_thread(acceptor, (listener, id))
-        return
-
-    header, decicedBallot, decisionDepth, decision = pickle.loads(data)
-    madeDecision = decide(connection, decisionDepth, decision)
-    if not madeDecision:
-        start_new_thread(acceptor, (listener, id))
-        return
-
-    print(blockchain)
-
-    acceptLock.acquire()
-    acceptBlock = None
-    acceptNum = (0, 0)
-    acceptLock.release()
+    accept_lock.acquire()
+    accept_block = None
+    accept_num = (0, 0)
+    accept_lock.release()
 
     start_new_thread(acceptor, (listener, id))
-    print("acceptor returned successfully")
 
 
-def parseAddrs(config):
+
+''' 
+Utility functions for parsing the network addresses from the config file, opening listeners
+and starting the corresponding acceptor threads, and processing a transaction and starting an
+instance of Paxos as leader.
+'''
+
+def parse_addrs(config):
 
     matrix = []
     row = []
     for c in config:
         ip, ports = c.split(",")
-        portList = ports.split(":")
+        port_list = ports.split(":")
 
-        for p in portList:
+        for p in port_list:
             row.append((ip, int(p)))
         matrix.append(row)
         row = []
 
     return matrix
 
-def openListeners():
-    global myID
-    global nodeAddrMatrix
-    global listeners
+def open_listeners():
+    global my_id
+    global node_addr_matrix
 
     listeners = []
-    for (id, (myIP, myPort)) in enumerate(nodeAddrMatrix[myID]):
+    for (id, (myIP, myPort)) in enumerate(node_addr_matrix[my_id]):
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listeners.append(listener)
@@ -509,45 +540,52 @@ def openListeners():
 
         start_new_thread(acceptor, (listener, id,))
 
+    return listeners
 
-def processTransaction(amount, debitNode, creditNode):
+
+def process_transaction(amount, debit_node, credit_node):
     global balance
     global transactions
 
-    transactionLock.acquire()
-    freeLocks.remove(transactionLock)
-    if transactions == []: ## Fix later -- causes failure if starting from iniitalized with nonempty transacs
+    if not in_paxos:
         start_new_thread(leader, ())
 
+    transaction_lock.acquire()
+    free_locks.remove(transaction_lock)
+
     if len(transactions) < 10:
-        balance -= amount
-        transactions.append((amount, debitNode, creditNode))
-        saveState()
+        transactions.append([amount, debit_node, credit_node])
+        save_state()
     else:
         print("Error: Transaction log is full. Please wait for consensus.")
-    transactionLock.release()
-    freeLocks.append(transactionLock)
+
+    transaction_lock.release()
+    free_locks.append(transaction_lock)
 
 def Main():
-    global myID
-    global nodeAddrMatrix
-    global listeners
-    global ballotNum
+    global my_id
+    global quorum_size
+    global node_addr_matrix
 
     global balance
     global transactions
     global blockchain
-    global depth
 
-    myID = int(input("Enter process ID: "))
-    loadState()
+    my_id = int(input("Enter process ID: "))
+    while my_id > 4:
+        my_id = int(input("Error: Cannot have more than 5 nodes. Please input a valid process ID (0 - 4): "))
+    load_state()
 
-    config = open("config.txt").read().splitlines()
-    nodeAddrMatrix = parseAddrs(config)
-    openListeners()
+    if not in_paxos and transactions != []:
+        start_new_thread(leader, ())
+
+    config = open("openstack_config.txt").read().splitlines()
+    node_addr_matrix = parse_addrs(config)
+    quorum_size = int(len(node_addr_matrix) / 2) + 1
+    listeners = open_listeners()
 
     while True:
-        print("Please select one of the following options:\n"
+        print("\nPlease select one of the following options:\n"
               "moneyTransfer\n"
               "printBlockchain\n"
               "printBalance\n"
@@ -559,22 +597,25 @@ def Main():
         command = input("Enter selection: ")
         if command == "moneyTransfer":
             transaction = input("Please enter amount,debit_node,credit_node: ")
-            amount, debitNode, creditNode = map(int, (transaction.split(",")))
+            amount, debit_node, credit_node = map(int, (transaction.split(",")))
 
             if amount > balance:
                 print("Error: Not enough money to transfer $" + str(amount) + "\n")
                 continue
 
-            if debitNode < 0 or debitNode > 2:
-                print("Error: Node " + str(debitNode) + " does not exist\n")
+            if debit_node < 0 or debit_node > 2:
+                print("Error: Node " + str(debit_node) + " does not exist\n")
                 continue
 
-            if creditNode < 0 or creditNode > 2:
-                print("Error: Node " + str(creditNode) + " does not exist\n")
+            if credit_node < 0 or credit_node > 2:
+                print("Error: Node " + str(credit_node) + " does not exist\n")
                 continue
 
-            processTransaction(amount, debitNode, creditNode)
-            print("")
+            if debit_node != my_id:
+                print("Error: Cannot transfer another nodes funds\n")
+                continue
+
+            process_transaction(amount, debit_node, credit_node)
 
         elif command == "printBlockchain":
             print(blockchain)
@@ -585,36 +626,21 @@ def Main():
         elif command == "crashNode":
             sys.exit()
         elif command == "severLink":
-            targetNode = int(input("Please enter node to sever link with: "))
-            if linkSevered[targetNode]:
-                print("Error: Link with node " + str(targetNode) + " already severed.")
+            target_node = int(input("Please enter node to sever link with: "))
+            if link_severed[target_node]:
+                print("Error: Link with node " + str(target_node) + " already severed.")
             else:
-                linkSevered[targetNode] = True
+                link_severed[target_node] = True
         elif command == "restoreLink":
-            targetNode = int(input("Please enter node to restore link with: "))
-            if not linkSevered[targetNode]:
-                print("Error: Link with node " + str(targetNode) + " has not been severed.")
+            target_node = int(input("Please enter node to restore link with: "))
+            if not link_severed[target_node]:
+                print("Error: Link with node " + str(target_node) + " has not been severed.")
             else:
-                linkSevered[targetNode] = False
-                print(listeners)
-                start_new_thread(acceptor, (listeners[targetNode], targetNode))
-                '''listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                while True:
-                    try:
-                        print("Attempting to bind to " + str(nodeAddrMatrix[myID][targetNode]))
-                        listener.bind(nodeAddrMatrix[myID][targetNode])
-                        print("Successfully connected")
-                        break
-                    except OSError:
-                        print("Stuck")
-                        time.sleep(2)
-                        continue
-                print("About to start accept thread with " + str(listener))
-                '''
+                link_severed[target_node] = False
+                start_new_thread(acceptor, (listeners[target_node], target_node))
 
         else:
-            print("Error: Invalid command\n")
+            print("Error: Invalid command")
             continue
 
 
