@@ -151,8 +151,10 @@ def get_priority_block(acks):
 
         blockchain_lock.acquire()
         free_locks.remove(blockchain_lock)
+        
         if ack_depth > depth and update != None:
             update_chain(update)
+            
         blockchain_lock.release()
         free_locks.append(blockchain_lock)
 
@@ -424,6 +426,7 @@ def decide(connection, decision_depth, decision):
             blockchain_lock.release()
             free_locks.append(blockchain_lock)
             return False
+        
         update_chain(pickle.loads(data))
 
     update_balance(decision)
