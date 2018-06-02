@@ -230,9 +230,9 @@ def quorum(responses):
         return False
 
 def leader():
-    global my_id
     global node_addr_matrix
-
+    
+    global my_id
     global transactions
     global depth
 
