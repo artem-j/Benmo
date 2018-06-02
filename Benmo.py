@@ -536,7 +536,6 @@ def open_listeners():
     return listeners
 
 def process_transaction(amount, debit_node, credit_node):
-    global balance
     global transactions
 
     if not in_paxos:
@@ -595,11 +594,11 @@ def Main():
                 print("Error: Not enough money to transfer $" + str(amount) + "\n")
                 continue
 
-            if debit_node < 0 or debit_node > 2:
+            if debit_node < 0 or debit_node > 4:
                 print("Error: Node " + str(debit_node) + " does not exist\n")
                 continue
 
-            if credit_node < 0 or credit_node > 2:
+            if credit_node < 0 or credit_node > 4:
                 print("Error: Node " + str(credit_node) + " does not exist\n")
                 continue
 
@@ -611,28 +610,33 @@ def Main():
 
         elif command == "printBlockchain":
             print(blockchain)
+            
         elif command == "printBalance":
             print(balance)
+            
         elif command == "printQueue":
             print(transactions)
+            
         elif command == "crashNode":
             sys.exit()
+            
         elif command == "severLink":
             target_node = int(input("Please enter node to sever link with: "))
             if link_severed[target_node]:
-                print("Error: Link with node " + str(target_node) + " already severed.")
+                print("Error: Link with node " + str(target_node) + " already severed.\n")
             else:
                 link_severed[target_node] = True
+                
         elif command == "restoreLink":
             target_node = int(input("Please enter node to restore link with: "))
             if not link_severed[target_node]:
-                print("Error: Link with node " + str(target_node) + " has not been severed.")
+                print("Error: Link with node " + str(target_node) + " has not been severed.\n")
             else:
                 link_severed[target_node] = False
                 start_new_thread(acceptor, (listeners[target_node], target_node))
 
         else:
-            print("Error: Invalid command")
+            print("Error: Invalid command\n")
             continue
 
 
