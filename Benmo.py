@@ -4,7 +4,6 @@ import json
 from _thread import *
 
 
-
 # Network state
 global quorum_size
 global node_addr_matrix
@@ -62,7 +61,6 @@ def save_state():
     for lock in free_locks:
         lock.release()
 
-
 def load_state():
     global balance
     global transactions
@@ -84,7 +82,6 @@ def load_state():
 
     for lock in free_locks:
         lock.release()
-
 
 def is_greater(ballot1, ballot2):
     if ballot1[0] > ballot2[0] or (ballot1[0] == ballot2[0] and ballot1[1] > ballot2[1]):
@@ -111,8 +108,6 @@ def update_chain(update):
         blockchain.append(block)
         depth += 1
         save_state()
-
-
 
 
 ''' 
@@ -166,7 +161,6 @@ def get_priority_block(acks):
                 priority_block = (prev_accept_block, prev_accept_num)
 
     return transactions if priority_block[0] is None else priority_block[0]
-
 
 def propose(id, connection, proposal, ballot, accepts, needs_update, crashed_nodes):
     global depth
@@ -339,7 +333,6 @@ def leader():
     in_paxos = False
 
 
-
 ''' 
 Acceptor functions for communicating with leader, applying the decision to the blockchain, 
 receiving data from leader, and acting as an acceptor in an instance of Paxos.
@@ -379,7 +372,6 @@ def send_ack(connection, leader_num, leader_depth):
         return False
 
     return True
-
 
 def send_accept(connection, accept_bal, proposal):
     global accept_num
@@ -476,7 +468,6 @@ def acceptor(listener, id):
         start_new_thread(acceptor, (listener, id))
         return
 
-
     data = get_data(connection, listener, id)
     if data == None:
         return
@@ -502,7 +493,6 @@ def acceptor(listener, id):
     accept_lock.release()
 
     start_new_thread(acceptor, (listener, id))
-
 
 
 ''' 
@@ -541,7 +531,6 @@ def open_listeners():
         start_new_thread(acceptor, (listener, id,))
 
     return listeners
-
 
 def process_transaction(amount, debit_node, credit_node):
     global balance
