@@ -19,4 +19,16 @@ One can use "moneyTransfer" to send money from one node (debit_node) to another 
 
 # How it could be improved
 
-- 
+- Split the file up into several modules
+   - One solution is to simply move all the leader and acceptor utility functions to another file, so the general Paxos       algorithm remains in the original file. Alternatively, all the leader and acceptor functions could be moved to separate files, but this might make the code harder to follow.
+   
+- Add support for an arbitrary (odd) number of nodes
+  - This would be an easy change, but because the project is meant to be a proof of concept rather than a legitimate transaction manager, it is not integral.
+  
+- Rewrite the project in C
+  - This could be done to improve scalability, as it would resolve global interpreter lock and greatly increase efficiency. However, this would greatly increase the complexity of the code. As mentioned above, this project is meant to be a proof of concept, so scalability is not a serious concern.
+
+- Combine all the locks into one
+  - Due to global interpreter lock, the impact on efficiency would be marginal. This change would make the code cleaner, but it's a poor design choice overall.
+  
+ 
