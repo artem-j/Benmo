@@ -618,6 +618,9 @@ def Main():
             print(transactions)
             
         elif command == "crashNode":
+            transaction_lock.acquire()
+            blockchain_lock.acquire()
+            ballot_lock.acquire()
             sys.exit()
             
         elif command == "severLink":
