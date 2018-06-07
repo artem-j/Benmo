@@ -7,7 +7,7 @@ from _thread import *
 # Network state
 global quorum_size
 global node_addr_matrix
-link_severed = [False, False, False]
+link_severed = [False, False, False, False, False]
 
 # Process state
 global my_id
@@ -528,6 +528,7 @@ def open_listeners():
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listeners.append(listener)
+        print(str(myIP) + ":" + str(myPort))
         listener.bind((myIP, myPort))
         listener.listen(1)
 
