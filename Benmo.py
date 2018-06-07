@@ -239,7 +239,7 @@ def leader():
     global in_paxos
     global ballot_num
 
-    time = 10
+    timer = 10
     #timer = random.randint(20, 60)
     time.sleep(timer)
     in_paxos = True
