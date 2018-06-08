@@ -123,7 +123,7 @@ def prepare(connection, acks, crashed_nodes):
     message = pickle.dumps(prepare)
 
     try:
-        time.sleep(2)
+        #time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
         crashed_nodes.append(connection)
@@ -171,7 +171,7 @@ def propose(id, connection, proposal, ballot, accepts, needs_update, crashed_nod
     message = pickle.dumps(accept)
 
     try:
-        time.sleep(2)
+        #time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
         return
@@ -204,7 +204,7 @@ def send_decision(connection, decided_num, decided_depth, decided_block, crashed
     message = pickle.dumps(decision)
 
     try:
-        time.sleep(2)
+        #time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
         crashed_nodes.append(connection)
@@ -216,7 +216,7 @@ def send_update(connection, recv_depth, saved_chain):
     update = saved_chain[recv_depth:depth]
     message = pickle.dumps(update)
     try:
-        time.sleep(2)
+        #time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
         return
@@ -368,7 +368,7 @@ def send_ack(connection, leader_num, leader_depth):
     ack = ("ack", leader_num, accept_num, accept_block, depth, update)
     message = pickle.dumps(ack)
     try:
-        time.sleep(2)
+        #time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
         return False
@@ -399,7 +399,7 @@ def send_accept(connection, accept_bal, proposal):
     accept = ("accept", accept_bal, proposal, depth)
     message = pickle.dumps(accept)
     try:
-        time.sleep(2)
+        #time.sleep(2)
         connection.sendall(message)
     except (ConnectionError, socket.timeout) as e:
         return False
